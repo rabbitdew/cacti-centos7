@@ -1,0 +1,91 @@
+#!/bin/bash
+
+# Maintainer: Jon Howell
+# Install cacti (from epel) and compile spine poller on Centos7. The cacti log file is symlinked to a directory in /var/log
+# it needs to be chowned in order for you to write to it. 
+
+
+read -p "Enter root sql password: " SQL_ROOTPW
+read -p "Enter name of db to use for cacti: " CACTIDB
+read -p "Enter cacti DB user: " DATABASE_USER
+read -p "Enter cacti DB password: " DBPW
+
+systemctl enable firewalld
+systemctl start firewalld
+firewall-cmd --add-service=http --permanent
+firewall-cmd --add-service=http
+
+yum clean all
+yum -y update
+yum -y install httpd httpd-devel php-mysql php-pear php-common php-gd php-devel php php-mbstring php-cli php-snmp net-snmp-libs net-snmp-devel net-snmp-utils rrdtool epel-release mariadb-server mariadb-devel autoconf automake libtool dos2unix wget help2man gcc elinks
+
+
+if [ $? -ne 0 ]
+then
+        echo "yum install failed"
+        exit 1
+fi
+
+yum -y update
+yum -y install cacti
+
+exit 0
+
+
+systemctl enable httpd mariadb snmpd crond
+systemctl start httpd mariadb snmpd crond
+
+
+if [ $? -ne 0 ]
+then
+        echo "services didn't start"
+        exit 2
+fi
+
+
+# Similar to mysql_safe_install. Also create a DB and user, hand it to cacti
+
+mysqladmin -u root password "$SQL_ROOTPW"
+mysql -u root -p"$SQL_ROOTPW" -e "UPDATE mysql.user SET Password=PASSWORD('$SQL_ROOTPW') WHERE User='root'"
+mysql -u root -p"$SQL_ROOTPW" -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1')"
+mysql -u root -p"$SQL_ROOTPW" -e "DELETE FROM mysql.user WHERE User=''"
+mysql -u root -p"$SQL_ROOTPW" -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\_%'"
+mysql -u root -p"$SQL_ROOTPW" -e "CREATE DATABASE $CACTIDB"
+mysql -u root -p"$SQL_ROOTPW" -e "GRANT ALL PRIVILEGES ON $CACTIDB.* TO '$DATABASE_USER'@'localhost' IDENTIFIED BY '$DBPW'"
+mysql -u root -p"$SQL_ROOTPW" -e "FLUSH PRIVILEGES"
+echo 'skip-networking' >> /etc/my.cnf 		# Not sure this is necessary
+
+
+mysql -u "$DATABASE_USER" -p"$DBPW" "$CACTIDB" < `rpm -ql cacti|grep cacti.sql`
+
+if [ $? -ne 0 ]
+then
+        echo "handing the cactiDB to cacti failed"
+        exit 3
+fi
+
+echo "updating cacti config"
+sed -i "s@\$database_username = \"cactiuser\";@\$database_username = \"$DATABASE_USER\";@" /etc/cacti/db.php
+sed -i "s@\$database_password = \"cactiuser\";@\$database_password = \"$DBPW\";@" /etc/cacti/db.php
+
+echo "setting default cacti-cron 5 minute interval"
+sed -i '1 s/^#//' /etc/cron.d/cacti 			
+echo 'success! go to http://localhost/cacti and follow installer instructions'
+
+
+# Download and compile spine, afterwards you have to change the 'poller' in the cacti settings web UI
+
+wget http://www.cacti.net/downloads/spine/cacti-spine-0.8.8h.tar.gz
+tar xvzf cacti-spine-*.tar.gz
+cd cacti-spine-*
+./configure
+make
+make install
+yum -y remove gcc
+
+
+
+
+
+
+
